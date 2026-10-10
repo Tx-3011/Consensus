@@ -143,7 +143,7 @@ export class GroqModelAdapter implements ModelAdapter {
       "Exclude navigation, citation-only fragments, greetings, and duplicated parent/child content. Return at most 4 highest-value claims total, prioritizing distinct explanations rather than repeating the same reason.",
       `<answer_blocks>${serialized}</answer_blocks>`,
     ].join("\n");
-    const first = await this.completeJson(prompt, surfaceExtractionJsonSchema, observer, `${EXTRACTION_PROMPT_VERSION}.surface`, 8_000, "low");
+    const first = await this.completeJson(prompt, surfaceExtractionJsonSchema, observer, `${EXTRACTION_PROMPT_VERSION}.surface`, 4_000, "low");
     const parsed = parseSurfaceExtraction(first.content, blockMap);
     if (parsed.success) return { value: parsed.data, rawResponses: [first.raw], warnings: [] };
     const repaired = await this.completeJson([
@@ -151,7 +151,7 @@ export class GroqModelAdapter implements ModelAdapter {
       `Validation error: ${parsed.error}`,
       `<answer_blocks>${serialized}</answer_blocks>`,
       `<previous_json>${first.content}</previous_json>`,
-    ].join("\n"), surfaceExtractionJsonSchema, observer, `${EXTRACTION_PROMPT_VERSION}.surface.repair`, 8_000, "low");
+    ].join("\n"), surfaceExtractionJsonSchema, observer, `${EXTRACTION_PROMPT_VERSION}.surface.repair`, 4_000, "low");
     const repairedParsed = parseSurfaceExtraction(repaired.content, blockMap);
     if (!repairedParsed.success) throw new ModelValidationError(`Groq surface extraction remained invalid after one repair: ${repairedParsed.error}`);
     return { value: repairedParsed.data, rawResponses: [first.raw, repaired.raw], warnings: ["The first structured extraction required one schema repair."] };
@@ -208,9 +208,10 @@ export class GroqModelAdapter implements ModelAdapter {
     return { value: repairedParsed.data, rawResponses: [first.raw, repaired.raw], warnings: ["The first support assessment required one schema repair."] };
   }
 
-  private async completeJson(prompt: string, schema: object, observer: ModelAttemptObserver | undefined, promptVersion: string, maxTokens = 6_000, reasoningEffort?: "low" | "medium" | "high") {
+  private async completeJson(prompt: string, schema: object, observer: ModelAttemptObserver | undefined, promptVersion: string, maxTokens = 4_000, reasoningEffort?: "low" | "medium" | "high") {
     const config = getConfig();
     if (!config.GROQ_API_KEY) throw new ModelSetupError("GROQ_API_KEY is not configured. Add it to .env.local or use fixture mode.");
+    await paceForTokenBudget(estimateTokens(prompt, maxTokens));
     const body = {
       model: this.model,
       temperature: 0,
@@ -292,6 +293,33 @@ function retryDelayMs(headers: Headers, payload: JsonRecord) {
   return match ? Math.min(60_000, Math.ceil(Number(match[1]) * (match[2].toLowerCase() === "ms" ? 1 : 1000))) : 12_000;
 }
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+// Free-tier Groq budget guard: keep estimated usage under ~7,500 tokens per
+// rolling 60s window so the 8,000 TPM limit is never hit. Called before every
+// model request; sleeps only when the next call would overflow the window.
+const TPM_BUDGET = 7_500;
+const TPM_WINDOW_MS = 60_000;
+let tpmWindowStart = Date.now();
+let tpmWindowTokens = 0;
+
+function estimateTokens(prompt: string, maxTokens: number) {
+  return Math.ceil(prompt.length / 4) + maxTokens;
+}
+
+
+async function paceForTokenBudget(estimatedTokens: number) {
+  const now = Date.now();
+  if (now - tpmWindowStart >= TPM_WINDOW_MS) {
+    tpmWindowStart = now;
+    tpmWindowTokens = 0;
+  }
+  if (tpmWindowTokens + estimatedTokens > TPM_BUDGET) {
+    const waitMs = tpmWindowStart + TPM_WINDOW_MS - Date.now();
+    if (waitMs > 0) await delay(waitMs);
+    tpmWindowStart = Date.now();
+    tpmWindowTokens = 0;
+  }
+  tpmWindowTokens += estimatedTokens;
+}
 
 function parseExtraction(content: string, source: string) {
   try {
