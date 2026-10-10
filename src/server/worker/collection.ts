@@ -214,8 +214,8 @@ async function processSupportTask(
     return;
   }
   const text = String(input.snapshot.extracted_text ?? "");
-  if (input.snapshot.outcome !== "fetched" || Number(input.snapshot.truncated) === 1 || text.length > 20_000) {
-    const reason = String(input.snapshot.unresolved_reason ?? (Number(input.snapshot.truncated) === 1 || text.length > 20_000 ? "Document text exceeded the bounded analysis window." : "Document was not inspectable."));
+  if (input.snapshot.outcome !== "fetched" || Number(input.snapshot.truncated) === 1 || text.length > 8_000) {
+    const reason = String(input.snapshot.unresolved_reason ?? (Number(input.snapshot.truncated) === 1 || text.length > 8_000 ? "Document text exceeded the bounded analysis window." : "Document was not inspectable."));
     const ids = persistUnresolvedSupports(db, investigation.id, snapshotId, reason);
     updateTaskState(db, task.id, "succeeded", undefined, undefined, ids);
     await finalizeIfReady(db, investigation.id);
